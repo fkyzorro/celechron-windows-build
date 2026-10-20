@@ -1,0 +1,87 @@
+name: Build Celechron Windows portable application
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Check out original Celechron 1.3.1 source
+        uses: actions/checkout@v4
+        with:
+          repository: Celechron/Celechron
+          ref: c6256031e84f0a0ed0c044e93f4a083ffc45713d
+          path: app
+          persist-credentials: false
+
+      - name: Check out reviewed Windows compatibility files
+        uses: actions/checkout@v4
+        with:
+          repository: fkyzorro/TrendRadar
+          ref: 67966975546b96484edd7da0fdebc4bf6668ae5d
+          path: compatibility
+          persist-credentials: false
+          sparse-checkout: /overlay/
+          sparse-checkout-cone-mode: false
+
+      - name: Apply and verify Windows compatibility files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $upstream = git -C .\app rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $upstream -ne 'c6256031e84f0a0ed0c044e93f4a083ffc45713d') {
+            throw 'Unexpected Celechron source commit.'
+          }
+          $compatibility = git -C .\compatibility rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $compatibility -ne '67966975546b96484edd7da0fdebc4bf6668ae5d') {
+            throw 'Unexpected Windows compatibility commit.'
+          }
+          Get-ChildItem -LiteralPath .\compatibility\overlay -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination .\app -Recurse -Force
+          }
+          foreach ($required in @('scripts\build-windows.ps1', 'scripts\smoke-test-windows.ps1', 'scripts\PORTABLE-README.txt', '.github\workflows\windows-build.yml', 'WINDOWS-BUILD-README.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path '.\app' $required))) {
+              throw "Missing build input: $required"
+            }
+          }
+
+      - name: Install Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Compile, package, and check startup
+        shell: powershell
+        run: .\app\scripts\build-windows.ps1
+
+      - name: Upload runnable package and matching source
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Celechron-1.3.1-Windows-x64
+          path: |
+            app/dist/Celechron-1.3.1-Windows-x64.zip
+            app/dist/Celechron-1.3.1-Windows-source.zip
+            app/dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Celechron-Windows-build-logs
+          path: app/dist/logs/
+          if-no-files-found: warn
+          retention-days: 14
